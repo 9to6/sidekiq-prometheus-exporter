@@ -7,6 +7,15 @@ module Sidekiq
   module Prometheus
     # Expose Prometheus metrics via Rack application or Sidekiq::Web application
     module Exporter
+      class Config
+        include Singleton
+        attr_accessor :metrics_prefix, :metrics_path
+
+        def initialize
+          @metrics_prefix = ''
+          @metrics_path = '/metrics'
+        end
+      end
       HTTP_GET = 'GET'.freeze
       NOT_FOUND_TEXT = 'Not Found'.freeze
       REQUEST_METHOD = 'REQUEST_METHOD'.freeze
@@ -14,35 +23,35 @@ module Sidekiq
         'Content-Type' => 'text/plain; version=0.0.4',
         'Cache-Control' => 'no-cache'
       }.freeze
-      LATENCY_TEMPLATE = 'sidekiq_queue_latency_seconds{name="%<name>s"} %<latency>.3f'.freeze
+      LATENCY_TEMPLATE = '%<prefix>ssidekiq_queue_latency_seconds{name="%<name>s"} %<latency>.3f'.freeze
       METRICS_TEMPLATE = <<-TEXT.gsub(/^[^\r\n][[:space:]]{2,}/, '').freeze
         # HELP sidekiq_processed_jobs_total The total number of processed jobs.
         # TYPE sidekiq_processed_jobs_total counter
-        sidekiq_processed_jobs_total %<processed_jobs>d
+        %<prefix>ssidekiq_processed_jobs_total %<processed_jobs>d
 
         # HELP sidekiq_failed_jobs_total The total number of failed jobs.
         # TYPE sidekiq_failed_jobs_total counter
-        sidekiq_failed_jobs_total %<failed_jobs>d
+        %<prefix>ssidekiq_failed_jobs_total %<failed_jobs>d
 
         # HELP sidekiq_busy_workers The number of workers performing the job.
         # TYPE sidekiq_busy_workers gauge
-        sidekiq_busy_workers %<busy_workers>d
+        %<prefix>ssidekiq_busy_workers %<busy_workers>d
 
         # HELP sidekiq_enqueued_jobs The number of enqueued jobs.
         # TYPE sidekiq_enqueued_jobs gauge
-        sidekiq_enqueued_jobs %<enqueued_jobs>d
+        %<prefix>ssidekiq_enqueued_jobs %<enqueued_jobs>d
 
         # HELP sidekiq_scheduled_jobs The number of jobs scheduled for a future execution.
         # TYPE sidekiq_scheduled_jobs gauge
-        sidekiq_scheduled_jobs %<scheduled_jobs>d
+        %<prefix>ssidekiq_scheduled_jobs %<scheduled_jobs>d
 
         # HELP sidekiq_retry_jobs The number of jobs scheduled for the next try.
         # TYPE sidekiq_retry_jobs gauge
-        sidekiq_retry_jobs %<retry_jobs>d
+        %<prefix>ssidekiq_retry_jobs %<retry_jobs>d
 
         # HELP sidekiq_dead_jobs The number of jobs being dead.
         # TYPE sidekiq_dead_jobs gauge
-        sidekiq_dead_jobs %<dead_jobs>d
+        %<prefix>ssidekiq_dead_jobs %<dead_jobs>d
 
         # HELP sidekiq_queue_latency_seconds The amount of seconds between oldest job being pushed to the queue and current time.
         # TYPE sidekiq_queue_latency_seconds gauge
@@ -51,7 +60,7 @@ module Sidekiq
 
       def self.to_app
         Rack::Builder.app do
-          map('/metrics') do
+          map(Config.instance.metrics_path) do
             run Sidekiq::Prometheus::Exporter
           end
         end
@@ -62,10 +71,11 @@ module Sidekiq
 
         stats = Sidekiq::Stats.new
         queues_latency = Sidekiq::Queue.all.map do |queue|
-          format(LATENCY_TEMPLATE, name: queue.name, latency: queue.latency)
+          format(LATENCY_TEMPLATE, prefix: Config.instance.metrics_prefix + '_', name: queue.name, latency: queue.latency)
         end
         body = format(
           METRICS_TEMPLATE,
+          prefix: Config.instance.metrics_prefix + '_',
           processed_jobs: stats.processed,
           scheduled_jobs: stats.scheduled_size,
           enqueued_jobs: stats.enqueued,
@@ -80,7 +90,7 @@ module Sidekiq
       end
 
       def self.registered(app)
-        app.get('/metrics') do
+        app.get(Config.instance.metrics_path) do
           Sidekiq::Prometheus::Exporter.call(REQUEST_METHOD => HTTP_GET)
         end
       end
